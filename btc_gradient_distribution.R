@@ -41,6 +41,7 @@ if (!file.exists("data/crypto_ls.rds")){
     write_rds(crypto_ls, "data/crypto_ls.rds")
 } else{
     print("Crypto list already exists...")
+    crypto_ls <- read_rds("data/crypto_ls.rds")
 }
 
 # download list of selected crypto coins
@@ -51,46 +52,14 @@ if(!file.exists("data/crypto_data.rds")){
             read_rds("data/crypto_ls.rds"),
             convert = "USD"
         )
-    write_rds("data/crypto_data.rds")
+    write_rds(crypto_data, "data/crypto_data.rds")
 } else{
     print("Crypto data already downloaded...")
+    crypto_data <- read_rds("data/crypto_data.rds")
 }
 
 # test grounds ----
 
-samp <- extract_nbars(crypto_data %>% filter(symbol=="BTC"), 30)
-samp_mdl <-
-    lm(
-        data = samp,
-        close ~ poly(timestamp, degree = 2)
-    )
-summary(samp_mdl)
-samp_pred <- samp %>% 
-    mutate(
-        preds = predict(samp_mdl)
-    ) %>% 
-    pivot_longer(
-        cols = c(close, preds),
-        names_to = "type",
-        values_to = "vals"
-    )
-samp_pred %>% 
-    ggplot(aes(
-        timestamp, vals, color = type
-    )) +
-    geom_line()
-
-broom::tidy(samp_mdl)
-broom::glance(samp_mdl)
-coef(samp_mdl)
-model.matrix(samp_mdl)
-model.matrix(samp_mdl) %*% coef(samp_mdl)
-
-p <- c()
-for (i in 1:30){
-    p <- append(p, 0.891 + -0.422*i + 0.0208*i^2)
-}
-plot(p, type = "l")
 
 
 
@@ -192,10 +161,18 @@ run_sim <- function(jds, len, mod){
 # bootstrap ----
 
 # some sample have HUGE sigma, so I just filtered them out
-NEAR_data <- crypto_data %>% filter(symbol == "NEAR")
-b <- bootstrap_stats(1000, 30, NEAR_data) %>% 
-    drop_na() %>% 
-    filter(mdl_sigma < 1)
+coin <- "NEAR"
+NEAR_data <- crypto_data %>% filter(symbol == coin)
+if (!file.exists("data/bootstraps.rds"){
+	print("Bootstrapping samples...")
+	b <- bootstrap_stats(1000, 30, NEAR_data) %>% 
+	    drop_na() %>% 
+	    filter(mdl_sigma < 1)
+    	write_rds("/data/bootstraps.rds")
+	} else{
+		print("bootstrapps already performed")
+		b <- read_rds("/data/bootstraps.rds")
+	}
 
 # multivariate distribution sampling ----
 
@@ -219,6 +196,7 @@ sample_distribution
 # simulations ----
 
 # this simulation is a tick every 10 minutes over 30 days
+print("Simulating runs...")
 runs <-
     sample_distribution %>% 
     mutate(r = row_number()) %>% 
@@ -240,8 +218,6 @@ runs <-
         },
         .progress = TRUE
     )
-#write_csv(runs, "runs.csv")
-#runs <- read_csv("runs.csv")
 
 # DCA loop
 
@@ -444,9 +420,10 @@ sum_cost_function <- function(
         runs %>% 
         group_by(iteration) %>% 
         group_split() %>% 
-        {.[sample(c(1:length(runs)), size = 100, replace = TRUE)]} %>% 
+        {.[sample(c(1:length(runs)), size = 3, replace = TRUE)]} %>% 
         future_imap_dfr(
             ., function(X, idx){
+	    print(paste0("Simulating run: ", idx))
             cost_sim <- cost_function(
                 price_series = X,
                 base_order_size = 10000*theta[1],
@@ -459,6 +436,7 @@ sum_cost_function <- function(
                 days = 30,
                 len = 30*144
             )
+	    print("Simulation over")
             return(
                 tibble(
                     cost = cost_sim,
@@ -495,6 +473,7 @@ opts <- list(
         # take_profit_target,
         # num_of_dca
 
+print(paste0("Starting optimization for: ", coin))
 non_linear_opt0 <-
     nloptr(
         x0 = c(
@@ -506,9 +485,8 @@ non_linear_opt0 <-
             0.01 # take profit target
         ),
         eval_f = sum_cost_function,
-        lb = c(0.01, 0.01, 1, -0.1, 1, 0.005),
+        lb = c(0.01, 0.01, 1, -0.1, 1, 0.05),
         ub = c(0.25, 0.25, 3, -0.005, 3, 0.1),
         opts = opts
     )
 write_rds(non_linear_opt0, "optimization_results/optimization.rds")
-
