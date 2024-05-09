@@ -409,7 +409,7 @@ cost_function <- function(
             # I take only positives because this are the one we want to reduce
             # when average buy price > price
             # taking all leads to unwanted behavior
-            dev_positive <- cost[cost>0]
+            dev_positive <- dev[dev>0]
             cost <- mean(dev_positive)
         }
         # if (i %% 100 == 0){
