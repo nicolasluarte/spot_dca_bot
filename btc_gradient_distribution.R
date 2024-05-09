@@ -711,8 +711,8 @@ optimization_out <-
         )
     )
 
-write_csv(optimization_out, "optimization_results/optimization.csv")
-optimization_out <- read_csv("optimization_results/optimization.csv")
+write_csv(optimization_out, paste0("optimization_results/optimization_", coin, ".csv"))
+optimization_out <- read_csv("optimization_results/optimization_", coin, ".csv")
 
 # simulate with optimal parameters
 
