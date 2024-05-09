@@ -404,7 +404,13 @@ cost_function <- function(
                 filter(price != 0, average_buy_price != 0)
             price <- cost_tibble %>% pull(price)
             average_buy_price <- cost_tibble %>% pull(average_buy_price)
-            cost <- mean( (average_buy_price - price)/average_buy_price )
+            # price and buy price deviations
+            dev <- ((average_buy_price - price)/average_buy_price)
+            # I take only positives because this are the one we want to reduce
+            # when average buy price > price
+            # taking all leads to unwanted behavior
+            dev_positive <- cost[cost>0]
+            cost <- mean(dev_positive)
         }
         # if (i %% 100 == 0){
         #     print(paste0("progress: ", round((i/len)*100,2), "%" ))
