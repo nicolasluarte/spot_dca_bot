@@ -400,8 +400,11 @@ cost_function <- function(
                 filter(TP_bool == TRUE) %>% 
                 pull(TP_bool) %>% 
                 {length(.)}
-	    uvc <- abs(mean(drawdown_out)) + (sd(drawdown_out)*1)
-            cost <- -( (profit_out-10000) * number_of_tp_actions)
+            cost_tibble <- headers %>% 
+                filter(price != 0, average_buy_price != 0)
+            price <- cost_tibble %>% pull(price)
+            average_buy_price <- cost_tibble %>% pull(average_buy_price)
+            cost <- mean( (average_buy_price - price)/average_buy_price )
         }
         # if (i %% 100 == 0){
         #     print(paste0("progress: ", round((i/len)*100,2), "%" ))
@@ -649,7 +652,7 @@ sum_cost_function <- function(
             )
             }
         )
-    return(max(out$cost))
+    return(mean(out$cost))
 }
 
 
