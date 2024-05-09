@@ -161,7 +161,7 @@ run_sim <- function(jds, len, mod){
 # bootstrap ----
 
 # some sample have HUGE sigma, so I just filtered them out
-coin <- "NEAR"
+coin <- "SOL"
 NEAR_data <- crypto_data %>% filter(symbol == coin)
 if (!file.exists("data/bootstraps.rds")){
 	print("Bootstrapping samples...")
@@ -732,7 +732,7 @@ sim_optimal <-
             days = 30,
             len = 30*144
         ) %>% mutate(idx = idx)}, .progress = TRUE)
-write_csv(sim_optimal, "data/simulation_with_optimal_parameters.csv")
+write_csv(sim_optimal, paste0("data/simulation_with_optimal_parameters_", coin, ".csv"))
 
 # p1 <-
 #     sim_optimal %>% 
