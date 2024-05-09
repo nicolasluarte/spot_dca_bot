@@ -613,7 +613,7 @@ sample_runs <-
 
 
 
-plan(multisession, workers = 8)
+plan(multisession, workers = 30)
 sum_cost_function <- function(
         theta
         ){
