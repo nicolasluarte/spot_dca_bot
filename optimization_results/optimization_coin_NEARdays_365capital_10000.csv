@@ -1,0 +1,7 @@
+solution,parameters
+0.01,base_order_size
+0.010004736678699241,DCA_order_size
+1.0683209730665122,dca_multiplier
+-0.009727095928898102,price_deviation_target
+1.0000344351635837,price_deviation_multiplier
+0.05000082246071211,take_profit_target

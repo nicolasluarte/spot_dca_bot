@@ -4,8 +4,17 @@ pacman::p_load(
     furrr,
     nloptr,
     crypto2,
-    splines
+    splines,
+    Rcpp
 )
+
+# Terminal args ----
+
+# note that this is a vector
+args <- commandArgs(trailingOnly=TRUE)
+
+# print coin
+print(paste("Selected coin:", args[1], sep = " "))
 
 # https://stackoverflow.com/questions/47044068/get-the-path-of-current-script
 # get path of source file
@@ -37,7 +46,7 @@ if (!file.exists("data/crypto_ls.rds")){
     print("Creating crypto list...")
     crypto_ls <-
         crypto2::crypto_list() %>% 
-        filter(symbol %in% c("BTC", "ETH", "NEAR", "SOL", "BNB"))
+        filter(name %in% c("Bitcoin", "NEAR Protocol"))
     write_rds(crypto_ls, "data/crypto_ls.rds")
 } else{
     print("Crypto list already exists...")
@@ -58,9 +67,12 @@ if(!file.exists("data/crypto_data.rds")){
     crypto_data <- read_rds("data/crypto_data.rds")
 }
 
-# test grounds ----
-
-
+# Simulation definitions ----
+coin <- args[1]
+n_days <- as.numeric(args[2])
+n_boots <- as.numeric(args[3])
+n_simulations <- as.numeric(args[4])
+CAPITAL <- 10000
 
 
 # functions ----
@@ -139,7 +151,7 @@ bootstrap_stats <-
     }
 
 run_sim <- function(jds, len, mod){
-    i <- 1:len
+    i <- 1:(len)
     slope <- (
         (jds$poly_1 * (i)) + 
             (jds$poly_2 * (i)^2) +
@@ -151,28 +163,27 @@ run_sim <- function(jds, len, mod){
             sd = jds$mdl_sigma,
             n = len
         )
-    d <- slope + rand_noise
+    # normalize to avoid negative values, and only get the 
+    # shape of the price,, I add a constant to avoid price 0
+    # that would lead to an infinite buy
+    # we take the first one out in case is 0
+    d <- (slope + rand_noise)
     return(tibble(
         x = 1:(len * mod),
-        y = approx(d, n = len*mod)$y
+        y = scales::rescale(d, to=c(1,2))
     ))
 }
 
-# bootstrap ----
+# bootstraps ----
 
 # some sample have HUGE sigma, so I just filtered them out
-coin <- "SOL"
-NEAR_data <- crypto_data %>% filter(symbol == coin)
-if (!file.exists("data/bootstraps.rds")){
-	print("Bootstrapping samples...")
-	b <- bootstrap_stats(1000, 30, NEAR_data) %>% 
-	    drop_na() %>% 
-	    filter(mdl_sigma < 1)
-    	write_rds(b, "data/bootstraps.rds")
-	} else{
-		print("bootstrapps already performed")
-		b <- read_rds("data/bootstraps.rds")
-	}
+coin_data <- crypto_data %>%
+    filter(symbol == coin)
+print(paste("Dimension of data", dim(coin_data), sep = " "))
+print("Bootstrapping samples...")
+b <- bootstrap_stats(n_boots, n_days, coin_data) %>% 
+    drop_na() %>% 
+    filter(mdl_sigma < 1)
 
 # multivariate distribution sampling ----
 
@@ -186,7 +197,7 @@ mean_matrix <- c(
 )
 
 sample_distribution <- MASS::mvrnorm(
-    n = 1000,
+    n = n_boots,
     mu = mean_matrix,
     Sigma = covariance_matrix) %>% 
     as_tibble() %>% 
@@ -204,8 +215,8 @@ runs <-
     group_split() %>% 
     map_dfr(
         ., function(X){
-            # 30 days in seconds
-            sim <- run_sim(X, 30, 144) %>% 
+            # 90 days in seconds
+            sim <- run_sim(X, n_days, 1) %>% 
                 mutate(
                     iteration = X$r,
                     intercept = X$intercept,
@@ -237,9 +248,9 @@ cost_function <- function(
 ){
     # initialize parameters
     days <- days
-    len <- 144 * days # to simulate every 10 minutes
+    len <- days
     price_series <- price_series
-    capital <- 10000
+    capital <- CAPITAL
     num_of_dca <- num_of_dca
     dca_multiplier <- dca_multiplier
     price_deviation_target <- price_deviation_target
@@ -322,7 +333,13 @@ cost_function <- function(
         }
         
         # compute actual price deviation from previous order
-        price_deviation <- (price - tail(buy_prices, n=1)) / price
+        if (price == 0){
+            price_deviation <- 0
+            
+        }
+        else{
+            price_deviation <- (price - tail(buy_prices, n=1)) / price
+        }
         
         # make dca order?
         if (price_deviation <= price_deviation_target &
@@ -359,19 +376,10 @@ cost_function <- function(
             average_buy_price <- sum(outflow)/sum(coin_bag)
         }
         # sell all at the end of simulation
+        # testing NOT selling all at the end of the simulation
         if (i == len){
-            realized_profit <- append(realized_profit,
-                                      (sum(coin_bag)*price) - sum(outflow)
-            )
-            TP_bool <- TRUE
-	    drawdown_out <- append(drawdown_out, min(drawdown))
-	    drawdown <- 0
-            # reset all values
-            coin_bag <- c()
-            buy_price <- c()
-            outflow <- c()
-            average_buy_price <- 0
-            
+            TP_bool <- FALSE
+    	    drawdown_out <- append(drawdown_out, min(drawdown))
             # update tibble for the last time
             headers <- 
                 headers %>% 
@@ -405,12 +413,16 @@ cost_function <- function(
             price <- cost_tibble %>% pull(price)
             average_buy_price <- cost_tibble %>% pull(average_buy_price)
             # price and buy price deviations
-            dev <- ((average_buy_price - price)/average_buy_price)
+            # consider this as the sum of squared differences
+            # that is, deviation from the price, but we only care 
+            # for deviation above price
+            dev <- (average_buy_price - price)
             # I take only positives because this are the one we want to reduce
             # when average buy price > price
-            # taking all leads to unwanted behavior
-            dev_positive <- dev[dev>0]
-            cost <- mean(dev_positive)
+            # taking al l leads to unwanted behavior
+            # take all deviations from price a square them
+            dev_positive <- dev[dev>0]^2
+            cost <- sum(dev_positive)
         }
         # if (i %% 100 == 0){
         #     print(paste0("progress: ", round((i/len)*100,2), "%" ))
@@ -435,9 +447,9 @@ cost_function2 <- function(
 ){
     # initialize parameters
     days <- days
-    len <- 144 * days # to simulate every 10 minutes
+    len <- 1 * days # to simulate every 10 minutes
     price_series <- price_series
-    capital <- 10000
+    capital <- CAPITAL
     num_of_dca <- num_of_dca
     dca_multiplier <- dca_multiplier
     price_deviation_target <- price_deviation_target
@@ -520,7 +532,13 @@ cost_function2 <- function(
         }
         
         # compute actual price deviation from previous order
-        price_deviation <- (price - tail(buy_prices, n=1)) / price
+        if (price == 0){
+            price_deviation <- 0
+            
+        }
+        else{
+            price_deviation <- (price - tail(buy_prices, n=1)) / price
+        }
         
         # make dca order?
         if (price_deviation <= price_deviation_target &
@@ -558,18 +576,8 @@ cost_function2 <- function(
         }
         # sell all at the end of simulation
         if (i == len){
-            realized_profit <- append(realized_profit,
-                                      (sum(coin_bag)*price) - sum(outflow)
-            )
-            TP_bool <- TRUE
-	    drawdown_out <- append(drawdown_out, min(drawdown))
-	    drawdown <- 0
-            # reset all values
-            coin_bag <- c()
-            buy_price <- c()
-            outflow <- c()
-            average_buy_price <- 0
-            
+            TP_bool <- FALSE
+    	    drawdown_out <- append(drawdown_out, min(drawdown))
             # update tibble for the last time
             headers <- 
                 headers %>% 
@@ -589,17 +597,17 @@ cost_function2 <- function(
                 step = i
             )
             # compute end of simulation results
-            profit_out <- headers %>% 
-                filter(TP_bool == TRUE) %>% 
-                pull(realized_profit) %>% 
-                {sum(.)}
-            number_of_tp_actions <-
-                headers %>% 
-                filter(TP_bool == TRUE) %>% 
-                pull(TP_bool) %>% 
-                {length(.)}
-	    uvc <- abs(mean(drawdown_out)) + (sd(drawdown_out)*1)
-            cost <- -(profit_out / (uvc/number_of_tp_actions))
+#             profit_out <- headers %>% 
+#                 filter(TP_bool == TRUE) %>% 
+#                 pull(realized_profit) %>% 
+#                 {sum(.)}
+#             number_of_tp_actions <-
+#                 headers %>% 
+#                 filter(TP_bool == TRUE) %>% 
+#                 pull(TP_bool) %>% 
+#                 {length(.)}
+# 	    uvc <- abs(mean(drawdown_out)) + (sd(drawdown_out)*1)
+#             cost <- -(profit_out / (uvc/number_of_tp_actions))
         }
         # if (i %% 100 == 0){
         #     print(paste0("progress: ", round((i/len)*100,2), "%" ))
@@ -618,7 +626,7 @@ list_of_runs <-
 
 sample_runs <-
     list_of_runs %>% 
-    {.[sample(c(1:length(list_of_runs)), size = 100, replace = FALSE)]}
+    {.[sample(c(1:length(list_of_runs)), size = n_simulations, replace = TRUE)]}
 
 
 
@@ -631,20 +639,18 @@ sum_cost_function <- function(
         sample_runs %>% 
         future_imap_dfr(
             ., function(X, idx){
-	    print(paste0("Simulating run: ", idx))
             cost_sim <- cost_function(
                 price_series = X,
-                base_order_size = 10000*theta[1],
-                DCA_order_size = 10000*theta[2],
+                base_order_size = CAPITAL*theta[1],
+                DCA_order_size = CAPITAL*theta[2],
                 num_of_dca = 1,
                 dca_multiplier = theta[3],
                 price_deviation_target = theta[4],
                 price_deviation_multiplier = theta[5],
                 take_profit_target = theta[6],
-                days = 30,
-                len = 30*144
+                days = n_days,
+                len = days
             )
-	    print("Simulation over")
             return(
                 tibble(
                     cost = cost_sim,
@@ -711,10 +717,17 @@ optimization_out <-
         )
     )
 
-write_csv(optimization_out, paste0("optimization_results/optimization_", coin, ".csv"))
-optimization_out <- read_csv("optimization_results/optimization_", coin, ".csv")
+print(optimization_out)
 
-# simulate with optimal parameters
+write_csv(optimization_out, paste0(
+    "optimization_results/optimization_",
+    "coin_", coin,
+    "days_", n_days,
+    "capital_", CAPITAL,
+    ".csv"))
+#optimization_out <- read_csv(paste0("optimization_results/optimization_", coin, ".csv"))
+
+# simulate with optimal parameters ----
 
 sim_optimal <-
     sample_runs %>% 
@@ -722,28 +735,51 @@ sim_optimal <-
         ., function(X, idx){
         cost_sim <- cost_function2(
             price_series = X,
-            base_order_size = 10000*optimization_out$solution[1],
-            DCA_order_size = 10000*optimization_out$solution[2],
+            base_order_size = CAPITAL*optimization_out$solution[1],
+            DCA_order_size = CAPITAL*optimization_out$solution[2],
             num_of_dca = 1,
             dca_multiplier = optimization_out$solution[3],
             price_deviation_target = optimization_out$solution[4],
             price_deviation_multiplier = optimization_out$solution[5],
             take_profit_target = optimization_out$solution[6],
-            days = 30,
-            len = 30*144
-        ) %>% mutate(idx = idx)}, .progress = TRUE)
-write_csv(sim_optimal, paste0("data/simulation_with_optimal_parameters_", coin, ".csv"))
+            days = n_days,
+            len = n_days
+        ) %>%
+            mutate(
+                idx = idx
+                )
+        }, .progress = TRUE)
+
+
+profit <-
+    sim_optimal %>% 
+    ungroup() %>% 
+    group_by(idx) %>% 
+    filter(TP_bool == TRUE) %>% 
+    summarise(
+        percent_profit = (sum(realized_profit))/CAPITAL
+    ) 
+profit
+
+write_csv(sim_optimal, paste0(
+    "data/simulation_with_optimal_parameters_",
+    "coin_", coin,
+    "days_", n_days,
+    "capital_", CAPITAL,
+    ".csv"))
+
+# print profit distribution
+print(summary(profit$percent_profit))
 
 # p1 <-
-#     sim_optimal %>% 
-#     filter(price != 0, idx %in% c(1:10), average_buy_price != 0) %>% 
+#     sim_optimal %>%
+#     filter(price != 0, idx %in% c(1:20), average_buy_price != 0) %>%
 #     ggplot(aes(
 #         step, price, group = idx
 #     )) +
 #     geom_line() +
 #     geom_line(aes(step, average_buy_price), color = "blue") +
 #     facet_wrap(~idx)
+# p1
 
-
-    
     
