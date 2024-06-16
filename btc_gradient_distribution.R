@@ -46,7 +46,7 @@ if (!file.exists("data/crypto_ls.rds")){
     print("Creating crypto list...")
     crypto_ls <-
         crypto2::crypto_list() %>% 
-        filter(name %in% c("Bitcoin", "NEAR Protocol"))
+        filter(name %in% c("Bitcoin", "NEAR Protocol", "PAX Gold"))
     write_rds(crypto_ls, "data/crypto_ls.rds")
 } else{
     print("Crypto list already exists...")
