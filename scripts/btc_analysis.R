@@ -4,12 +4,18 @@ pacman::p_load(
     crypto2,
     furrr,
     fitdistrplus,
-    mgcv,
     patchwork,
     extrafont,
     tidymodels,
-    ranger
+    ranger,
+    future,
+    TTR,
+    janitor,
+    vip,
+    tseries
 )
+pacman::p_unload(MASS)
+plan(multisession)
 
 setwd(this.path::here())
 palette("Okabe-Ito")
@@ -71,12 +77,18 @@ parametric_cv <- feature_data %>%
 
 ## original data ----
 
+RSI_trend <- TTR::RSI(price = parametric_cv$close, n = 14)
+ATR_trend <- TTR::ATR(HLC = parametric_cv[, c("high", "low", "close")], n = 14)
+BB_trend <- TTR::BBands(HLC = parametric_cv[, c("high", "low", "close")], n = 14)
+ROC_trend <- TTR::ROC(x = parametric_cv$close, n = 9)
+STOCH_trend <- TTR::stoch(HLC = parametric_cv[, c("high", "low", "close")])
+ADX_trend <- TTR::ADX(HLC = parametric_cv[, c("high", "low", "close")], n = 14)
+
 rf_data <- parametric_cv %>%
     arrange(scaled_ts) %>%
     select(
         timestamp,
         detrend_close,
-        scaled_ts,
         gamma_fit,
         sd_daily,
         cv_daily,
@@ -84,7 +96,20 @@ rf_data <- parametric_cv %>%
         high,
         low,
         close
+    ) %>%
+    mutate(
+        RSI_trend = as_tibble(RSI_trend)$value,
+        ATR_trend = as_tibble(ATR_trend)$atr,
+        BB_trend = as_tibble(BB_trend)$pctB,
+        ROC_trend = as_tibble(ROC_trend)$value,
+        STOCH_fastK = as_tibble(STOCH_trend)$fastK,
+        STOCH_fastD = as_tibble(STOCH_trend)$fastD,
+        STOCH_slowD = as_tibble(STOCH_trend)$slowD,
+        ADX_adx = as_tibble(ADX_trend)$ADX,
+        ADX_pos = as_tibble(ADX_trend)$DIp,
+        ADX_neg = as_tibble(ADX_trend)$DIn
     )
+
 
 ## training and test data -----
 set.seed(420)
@@ -103,12 +128,16 @@ lag_recipe <- recipe(
     step_lag(
         timestamp,
         gamma_fit,
-        sd_daily,
-        cv_daily,
-        open,
-        high,
-        low,
-        close,
+        RSI_trend,
+        ATR_trend,
+        BB_trend,
+        ROC_trend,
+        STOCH_fastK,
+        STOCH_fastD,
+        STOCH_slowD,
+        ADX_adx,
+        ADX_pos,
+        ADX_neg,
         lag = 1:30,
         prefix = "lag_"
     ) %>%
@@ -123,8 +152,7 @@ lag_recipe <- recipe(
 
 rf_model_spec <- rand_forest(
     mtry = tune(),
-    trees = 500,
-    min_n = tune()
+    trees = 500
 ) %>%
     set_engine("ranger", importance = "permutation") %>%
     set_mode("regression")
@@ -139,9 +167,9 @@ rf_workflow <- workflow() %>%
 set.seed(69)
 time_series_cv_folds <- rolling_origin(
     train_raw_data,
-    initial = floor(nrow(train_raw_data) * 0.6),
-    asses = floor(nrow(train_raw_data) * 0.15),
-    skip = floor(nrow(train_raw_data) * 0.10),
+    initial = floor(nrow(train_raw_data) * 0.3),
+    asses = floor(nrow(train_raw_data) * 0.05),
+    skip = floor(nrow(train_raw_data) * 0.05),
     cumulative = FALSE
 )
 
@@ -160,10 +188,9 @@ num_predictor_approx <- length(
 mtry_upper_bound <- max(2, num_predictor_approx)
 mtry_lower_bound <- 2
 
-rf_param_grid <- grid_latin_hypercube(
+rf_param_grid <- grid_space_filling(
     mtry(range = c(mtry_lower_bound, mtry_upper_bound)),
-    min_n(range = c(2, 25)),
-    size = 100
+    size = 5
 )
 
 ## tunning process ----
@@ -230,16 +257,59 @@ final_metrics <- yardstick::metrics(
 )
 final_metrics
 
+### variable importance ----
+importance_plot <- vip(
+    final_rf_model_fit,
+    num_features = 50
+)
+importance_plot
+
+
+residual_data <- augment_test_data %>%
+    mutate(
+        y = scales::rescale(detrend_close, to = c(0, 1)),
+        y_hat = scales::rescale(.pred, to = c(0, 1)),
+        .resid = y - y_hat
+    ) %>%
+    select(
+        timestamp,
+        .resid
+    ) %>%
+    mutate(
+        x_t = lag(.resid, n = 1),
+        delta_x = (.resid - x_t)
+    )
+
+adf.test(residual_data$.resid)
+
+plot(density(residual_data$.resid))
+
+residual_data %>%
+    drop_na() %>%
+    ggplot(aes(
+        x_t, delta_x
+    )) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    facet_wrap(~ x_t > 0, scales = "free_x")
+
 augment_test_data %>%
-    filter(timestamp > "2024-01-01") %>%
     ggplot(aes(
         x = timestamp
     )) +
     geom_line(aes(
-        y = detrend_close,
+        y = scales::rescale(detrend_close, to = c(0, 1)),
         color = "actual"
     )) +
     geom_line(aes(
-        y = .pred,
+        y = scales::rescale(.pred, to = c(0, 1)),
         color = "predicted"
-    ), linetype = "dashed")
+    )) +
+    scale_color_manual(
+        values = c("black", "orange")
+    ) +
+    ggpubr::theme_pubr() +
+    labs(
+        color = ""
+    ) +
+    ylab("Detrended rescaled residuals")
