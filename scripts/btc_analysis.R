@@ -190,7 +190,7 @@ mtry_lower_bound <- 2
 
 rf_param_grid <- grid_space_filling(
     mtry(range = c(mtry_lower_bound, mtry_upper_bound)),
-    size = 5
+    size = 25
 )
 
 ## tunning process ----
