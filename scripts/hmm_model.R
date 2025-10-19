@@ -36,6 +36,13 @@ evaluate_clustering_cv <- function(window_matrix, num_clusters, k_folds = 3, see
         train_data <- window_matrix[train_indices, ]
         test_data <- window_matrix[test_indices, ]
 
+        # guard against too many suggested clusters
+        num_distinct_points <- nrow(unique(train_data))
+        if (num_distinct_points < num_clusters) {
+            silhouette_scores[i] <- NA
+            next
+        }
+
         kmeans_train <- kmeans(train_data, centers = num_clusters, nstart = 10)
 
         assign_cluster <- function(point, centroids) {
@@ -100,16 +107,16 @@ fitness_function <- function(params) {
 set.seed(42)
 message("start GA...")
 
-lower_bounds <- c(window_size = 5, num_clusters = 2)
-upper_bounds <- c(window_size = 100, num_clusters = 100)
+lower_bounds <- c(window_size = 3, num_clusters = 2)
+upper_bounds <- c(window_size = 7, num_clusters = 50)
 
 ga_results <- ga(
     type = "real-valued",
     fitness = fitness_function,
     lower = lower_bounds,
     upper = upper_bounds,
-    popSize = 50,
-    maxiter = 50,
+    popSize = 100,
+    maxiter = 500,
     pmutation = 0.2,
     pcrossover = 0.7,
     elitism = 2,
@@ -157,7 +164,7 @@ print(head(final_state_sequence))
 
 window_matrix_tibble <- as_tibble(set_names(
     cbind(as.data.frame(final_window_matrix), as.data.frame(final_state_sequence)),
-    c(c(1:95), "cluster")
+    c(c(1:optimal_d), "cluster")
 )) %>%
     mutate(id = row_number()) %>%
     pivot_longer(cols = -c(id, cluster), names_to = "T", values_to = "value") %>%
@@ -166,3 +173,26 @@ window_matrix_tibble <- as_tibble(set_names(
         T = as.numeric(T)
     )
 window_matrix_tibble
+
+# plot ----
+p1 <- window_matrix_tibble %>%
+    ggplot(aes(
+        T, value,
+        group = id
+    )) +
+    stat_summary(
+        fun.data = "mean_se",
+        geom = "line",
+        aes(group = 1),
+        color = "gray70"
+    ) +
+    stat_summary(
+        fun.data = "mean_se",
+        geom = "point",
+        aes(group = 1),
+        size = 3
+    ) +
+    facet_wrap(~cluster) +
+    scale_x_continuous(breaks = c(1:3)) +
+    ggpubr::theme_pubr()
+p1
